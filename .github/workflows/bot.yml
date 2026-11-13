@@ -1,9 +1,12 @@
 name: Market Pulse Bot
 
 on:
-  schedule:
-      - cron: "7,37 * * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Post a round now (ignore the 30-60 min wait)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -17,10 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - name: Random start delay (0-15 min)
-        if: github.event_name == 'schedule'
-        run: sleep $(( RANDOM % 900 ))
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -29,19 +28,24 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Post one round (5 posts, 1-2 min apart)
+      - name: Post one round if it's time (5 posts, 1-2 min apart)
         env:
           PYTHONUNBUFFERED: "1"
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: python bot.py --once
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            python bot.py --once --force
+          else
+            python bot.py --once
+          fi
 
-      - name: Save seen.json
+      - name: Save seen.json and state.json
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add seen.json
+          git add seen.json state.json
           if ! git diff --cached --quiet; then
             git commit -m "Update posted news"
             git pull --rebase
