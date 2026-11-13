@@ -66,12 +66,24 @@ def format_post(item):
     return "\n".join(lines)
 
 def send(text):
-    r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
-              "disable_web_page_preview": False}, timeout=30)
-    if not r.ok:
-        print("  Telegram error:", r.text)
-    return r.ok
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
+               "disable_web_page_preview": False}
+    for attempt in range(1, 4):
+        try:
+            r = requests.post(url, json=payload, timeout=30)
+            if r.ok:
+                return True
+            print("  Telegram error:", r.text)
+            if r.status_code == 429:   # Telegram says slow down
+                wait = r.json().get("parameters", {}).get("retry_after", 10)
+                time.sleep(wait)
+                continue
+            return False
+        except requests.RequestException as ex:
+            print(f"  network error (try {attempt}/3): {ex}")
+            time.sleep(10 * attempt)
+    return False
 
 def pick_round(seen):
     """Newest unseen items, taking turns between topics: gold, forex, bitcoin, fed, gold..."""
