@@ -1,0 +1,118 @@
+"""
+Google News -> Telegram channel bot
+- Fetches news from Google News (RSS) for your keywords
+- Mixes topics: takes the newest item from each keyword in turn
+- Posts one by one with a random 1-2 min gap
+- Then waits a random 30-60 min before the next round of 5
+- Skips anything already posted and news older than MAX_AGE_HOURS
+
+Install:  pip install feedparser requests
+Run once (GitHub Actions):  python bot.py --once
+"""
+
+import os, sys, json, time, html, re, random
+from datetime import datetime
+from urllib.parse import quote
+import feedparser, requests
+
+# ===== SETTINGS =====
+BOT_TOKEN = os.getenv("TG_BOT_TOKEN")                      # stored in GitHub Secrets, never in code
+CHAT_ID   = os.getenv("TG_CHAT_ID") or "-1004311851712"       # Market Pulse News
+KEYWORDS  = ["gold price", "forex market", "bitcoin price", "federal reserve"]  # your topics
+LANG, COUNTRY = "en", "US"         # e.g. "mk","MK" for Macedonian news
+
+POSTS_PER_ROUND = 5
+POST_GAP_SEC    = (60, 120)        # random gap between posts: 1-2 min
+ROUND_GAP_MIN   = (30, 60)         # random gap between rounds: 30-60 min
+MAX_AGE_HOURS   = 12               # ignore older news
+SEEN_FILE = "seen.json"
+# ====================
+
+
+def load_seen():
+    try:
+        return set(json.load(open(SEEN_FILE)))
+    except Exception:
+        return set()
+
+def save_seen(seen):
+    json.dump(list(seen)[-3000:], open(SEEN_FILE, "w"))
+
+def fetch_news(keyword):
+    url = (f"https://news.google.com/rss/search?q={quote(keyword)}"
+           f"&hl={LANG}&gl={COUNTRY}&ceid={COUNTRY}:{LANG}")
+    feed = feedparser.parse(url)
+    cutoff = time.time() - MAX_AGE_HOURS * 3600
+    items = []
+    for e in feed.entries:
+        ts = time.mktime(e.published_parsed) if e.get("published_parsed") else 0
+        if ts < cutoff:
+            continue
+        title = e.title
+        source = e.get("source", {}).get("title", "")
+        if source and title.endswith(" - " + source):
+            title = title[: -len(" - " + source)]
+        items.append({"id": e.link, "title": title, "source": source,
+                      "link": e.link, "ts": ts, "keyword": keyword})
+    items.sort(key=lambda x: x["ts"], reverse=True)   # newest first
+    return items
+
+def format_post(item):
+    t = html.escape(item["title"])
+    src = html.escape(item["source"] or "Google News")
+    tag = "#" + re.sub(r"\W+", "", item["keyword"].title())
+    lines = [f"📰 <b>{t}</b>", "",
+             f"🗞 {src}", f"🔗 <a href=\"{item['link']}\">Read more</a>", "", tag]
+    return "\n".join(lines)
+
+def send(text):
+    r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
+              "disable_web_page_preview": False}, timeout=30)
+    if not r.ok:
+        print("  Telegram error:", r.text)
+    return r.ok
+
+def pick_round(seen):
+    """Newest unseen items, taking turns between topics: gold, forex, bitcoin, fed, gold..."""
+    queues = {kw: [i for i in fetch_news(kw) if i["id"] not in seen] for kw in KEYWORDS}
+    picks, used_titles = [], set()
+    while len(picks) < POSTS_PER_ROUND and any(queues.values()):
+        for kw in KEYWORDS:
+            while queues[kw]:
+                item = queues[kw].pop(0)
+                key = item["title"].lower()
+                if key in used_titles:        # same story under two topics
+                    continue
+                picks.append(item)
+                used_titles.add(key)
+                break
+            if len(picks) >= POSTS_PER_ROUND:
+                break
+    return picks
+
+def run_round():
+    seen = load_seen()
+    picks = pick_round(seen)
+    print(f"[{datetime.now():%H:%M}] round start: {len(picks)} new items")
+    for n, item in enumerate(picks, 1):
+        if send(format_post(item)):
+            seen.add(item["id"])
+            save_seen(seen)
+            print(f"  posted {n}/{len(picks)}: {item['title'][:70]}")
+        if n < len(picks):
+            gap = random.randint(*POST_GAP_SEC)
+            print(f"  next post in {gap}s")
+            time.sleep(gap)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        sys.exit("TG_BOT_TOKEN is not set")
+    if "--once" in sys.argv:          # GitHub Actions: one round per run
+        run_round()
+        sys.exit(0)
+    while True:
+        run_round()
+        wait = random.randint(*ROUND_GAP_MIN)
+        print(f"Next round in {wait} min\n")
+        time.sleep(wait * 60)
