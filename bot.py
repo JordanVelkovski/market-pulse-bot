@@ -7,7 +7,7 @@ Google News -> Telegram channel bot
 - Skips anything already posted and news older than MAX_AGE_HOURS
 
 Install:  pip install feedparser requests
-Run once (GitHub Actions):  python bot.py --once
+Run once (GitHub Actions):  python bot.py --once   (add --force to skip the 30-60 min wait)
 """
 
 import os, sys, json, time, html, re, random
@@ -26,6 +26,7 @@ POST_GAP_SEC    = (60, 120)        # random gap between posts: 1-2 min
 ROUND_GAP_MIN   = (30, 60)         # random gap between rounds: 30-60 min
 MAX_AGE_HOURS   = 12               # ignore older news
 SEEN_FILE = "seen.json"
+STATE_FILE = "state.json"         # remembers when the next round is allowed
 # ====================
 
 
@@ -37,6 +38,15 @@ def load_seen():
 
 def save_seen(seen):
     json.dump(list(seen)[-3000:], open(SEEN_FILE, "w"))
+
+def load_state():
+    try:
+        return json.load(open(STATE_FILE))
+    except Exception:
+        return {}
+
+def save_state(state):
+    json.dump(state, open(STATE_FILE, "w"))
 
 def fetch_news(keyword):
     url = (f"https://news.google.com/rss/search?q={quote(keyword)}"
@@ -120,10 +130,24 @@ def run_round():
 if __name__ == "__main__":
     if not BOT_TOKEN:
         sys.exit("TG_BOT_TOKEN is not set")
-    if "--once" in sys.argv:          # GitHub Actions: one round per run
+
+    if "--once" in sys.argv:
+        # Started every ~10 min by cron-job.org. Only posts when the random
+        # 30-60 min gap since the last round has passed (or when forced).
+        force = "--force" in sys.argv
+        state = load_state()
+        now = time.time()
+        if not force and now < state.get("next_after", 0):
+            mins = int((state["next_after"] - now) / 60) + 1
+            print(f"Not time yet - next round in about {mins} min")
+            sys.exit(0)
         run_round()
+        gap = random.randint(*ROUND_GAP_MIN)
+        save_state({"last_round": now, "next_after": now + gap * 60})
+        print(f"Next round in about {gap} min")
         sys.exit(0)
-    while True:
+
+    while True:                         # local/Colab mode: run forever
         run_round()
         wait = random.randint(*ROUND_GAP_MIN)
         print(f"Next round in {wait} min\n")
